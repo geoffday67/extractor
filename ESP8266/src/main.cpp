@@ -8,11 +8,16 @@
 #define MQTT_CLIENT "shower-test"
 
 #define ROOT_TOPIC "shower-test"
-#define STATE_TOPIC ROOT_TOPIC "/state"
-#define RATE_TOPIC ROOT_TOPIC "/rate"
-#define TEMPERATURE_TOPIC ROOT_TOPIC "/temperature"
-#define EXTRACTOR_TOPIC ROOT_TOPIC "/extractor"
+
+#define CURRENT_TOPIC ROOT_TOPIC "/current"
+
+#define CURRENT_STATE_TOPIC CURRENT_TOPIC "/state"
+#define CURRENT_RATE_TOPIC CURRENT_TOPIC "/rate"
+#define CURRENT_TEMPERATURE_TOPIC CURRENT_TOPIC "/temperature"
+#define CURRENT_EXTRACTOR_TOPIC CURRENT_TOPIC "/extractor"
+
 #define SETTINGS_TOPIC ROOT_TOPIC "/settings"
+#define UPDATE_SETTINGS_TOPIC ROOT_TOPIC "/update-settings"
 
 #define FAN_PIN 4
 #define ONE_WIRE_BUS 13
@@ -102,16 +107,30 @@ void handleSubscribed(uint16_t packetId, const espMqttClientTypes::SubscribeRetu
 
 void fanOn() {
   digitalWrite(FAN_PIN, 1);
-  if (!mqttClient.publish(EXTRACTOR_TOPIC, 1, true, "on")) {
+  if (!mqttClient.publish(CURRENT_EXTRACTOR_TOPIC, 1, true, "on")) {
     ESP.restart();
   }
 }
 
 void fanOff() {
   digitalWrite(FAN_PIN, 0);
-  if (!mqttClient.publish(EXTRACTOR_TOPIC, 1, true, "off")) {
+  if (!mqttClient.publish(CURRENT_EXTRACTOR_TOPIC, 1, true, "off")) {
     ESP.restart();
   }
+}
+
+void publish(const char *ptopic, const float value) {
+  char s [32];
+
+  sprintf (s, "%0.1f", value);
+  mqttClient.publish(ptopic, 1, true, s);
+}
+
+void publish(const char *ptopic, const int value) {
+  char s [32];
+
+  sprintf (s, "%d", value);
+  mqttClient.publish(ptopic, 1, true, s);
 }
 
 void dumpSettings() {
@@ -120,6 +139,11 @@ void dumpSettings() {
   Serial.printf(" On rate: %0.1f\n", settings.onRate);
   Serial.printf(" Off temperature: %0.1f\n", settings.offTemperature);
   Serial.printf(" Minimum minutes: %d\n", settings.minimumMinutes);
+
+  publish(SETTINGS_TOPIC "/on-temperature", settings.onTemperature);
+  publish(SETTINGS_TOPIC "/on-rate", settings.onRate);
+  publish(SETTINGS_TOPIC "/off-temperature", settings.offTemperature);
+  publish(SETTINGS_TOPIC "/minimum-minutes", settings.minimumMinutes);
 }
 
 void loadSettings() {
@@ -169,7 +193,7 @@ void handleMessage(const espMqttClientTypes::MessageProperties& properties, cons
     } else if (!strcmp(mqttMessage, "off")) {
       fanOff();
     }
-  } else if (!strcmp(topic, SETTINGS_TOPIC)) {
+  } else if (!strcmp(topic, UPDATE_SETTINGS_TOPIC)) {
     memcpy(mqttMessage, payload, len);
     mqttMessage[len] = 0;
     procesSettings(mqttMessage);
@@ -194,7 +218,7 @@ void connectMqtt() {
   }
 
   // mqttClient.subscribe("shower/override", 1);
-  mqttClient.subscribe(SETTINGS_TOPIC, 1);
+  mqttClient.subscribe(UPDATE_SETTINGS_TOPIC, 1);
 }
 
 void setup() {
@@ -203,17 +227,19 @@ void setup() {
   Serial.println("Starting");
 
   EEPROM.begin(64);
-  loadSettings();
-  Serial.println("Settings initialised");
 
   fanOff();
   pinMode(FAN_PIN, OUTPUT);
+  Serial.println("Extractor initialised");
 
   connectWiFi();
   Serial.println("WiFi initialised");
 
   connectMqtt();
   Serial.println("MQTT initialised");
+
+  loadSettings();
+  Serial.println("Settings initialised");
 
   sensors.begin();
   sensors.setWaitForConversion(true);
@@ -245,12 +271,12 @@ void loop() {
     roc = rateOfChange();
 
     snprintf(msg, MSG_BUFFER_SIZE, "%0.1f", roc);
-    if (!mqttClient.publish(RATE_TOPIC, 1, true, msg)) {
+    if (!mqttClient.publish(CURRENT_RATE_TOPIC, 1, true, msg)) {
       ESP.restart();
     }
 
     snprintf(msg, MSG_BUFFER_SIZE, "%0.1f", tempC);
-    if (!mqttClient.publish(TEMPERATURE_TOPIC, 1, true, msg)) {
+    if (!mqttClient.publish(CURRENT_TEMPERATURE_TOPIC, 1, true, msg)) {
       ESP.restart();
     }
 
@@ -258,7 +284,7 @@ void loop() {
 
     switch (state) {
       case STATE_IDLE:
-        if (!mqttClient.publish(STATE_TOPIC, 1, true, "idle")) {
+        if (!mqttClient.publish(CURRENT_STATE_TOPIC, 1, true, "idle")) {
           ESP.restart();
         }
 
@@ -272,7 +298,7 @@ void loop() {
         break;
 
       case STATE_INITIAL:
-        if (!mqttClient.publish(STATE_TOPIC, 1, true, "initial")) {
+        if (!mqttClient.publish(CURRENT_STATE_TOPIC, 1, true, "initial")) {
           ESP.restart();
         }
 
@@ -289,7 +315,7 @@ void loop() {
         break;
 
       case STATE_WAITING:
-        if (!mqttClient.publish(STATE_TOPIC, 1, true, "waiting")) {
+        if (!mqttClient.publish(CURRENT_STATE_TOPIC, 1, true, "waiting")) {
           ESP.restart();
         }
 
