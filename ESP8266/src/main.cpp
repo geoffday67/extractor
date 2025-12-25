@@ -5,9 +5,9 @@
 #include <OneWire.h>
 #include <espMqttClient.h>
 
-#define MQTT_CLIENT "shower-test"
+#define MQTT_CLIENT "shower"
 
-#define ROOT_TOPIC "shower-test"
+#define ROOT_TOPIC "shower"
 
 #define CURRENT_TOPIC ROOT_TOPIC "/current"
 
