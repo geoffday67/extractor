@@ -14,6 +14,7 @@
 #define CURRENT_STATE_TOPIC CURRENT_TOPIC "/state"
 #define CURRENT_RATE_TOPIC CURRENT_TOPIC "/rate"
 #define CURRENT_TEMPERATURE_TOPIC CURRENT_TOPIC "/temperature"
+#define AMBIENT_TEMPERATURE_TOPIC CURRENT_TOPIC "/ambient"
 #define CURRENT_EXTRACTOR_TOPIC CURRENT_TOPIC "/extractor"
 
 #define SETTINGS_TOPIC ROOT_TOPIC "/settings"
@@ -278,7 +279,7 @@ void setup() {
 }
 
 void loop() {
-  float tempC, roc;
+  float tempC, roc, ambient;
 
   if (!WiFi.isConnected() || !mqttClient.connected()) {
     ESP.restart();
@@ -289,14 +290,17 @@ void loop() {
   unsigned long now = millis();
   if (now - lastMsg > 5000) {
     sensors.requestTemperatures();
-    tempC = sensors.getTempCByIndex(0);
+    tempC = sensors.getTempCByIndex(1);
     recordReading(tempC);
     roc = rateOfChange();
 
+    ambient = sensors.getTempCByIndex(0);
+
     publish(CURRENT_RATE_TOPIC, roc);
     publish(CURRENT_TEMPERATURE_TOPIC, tempC);
+    publish(AMBIENT_TEMPERATURE_TOPIC, ambient);
 
-    // Serial.printf("Temp: %0.1f, rate of change: %0.1f, current state: %d\n", tempC, roc, state);
+    // Serial.printf("Temp: %0.1f, ambient: %0.1f\n", tempC, ambient);
 
     // Always watch for rapidly increasing temperature whatever the current state.
     if (roc > settings.onRate) {
