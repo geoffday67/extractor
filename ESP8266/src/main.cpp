@@ -16,6 +16,7 @@
 #define CURRENT_TEMPERATURE_TOPIC CURRENT_TOPIC "/temperature"
 #define AMBIENT_TEMPERATURE_TOPIC CURRENT_TOPIC "/ambient"
 #define CURRENT_EXTRACTOR_TOPIC CURRENT_TOPIC "/extractor"
+#define MAX_DURING_INITIAL_TOPIC CURRENT_TOPIC "/max-during-initial"
 
 #define SETTINGS_TOPIC ROOT_TOPIC "/settings"
 #define UPDATE_SETTINGS_TOPIC ROOT_TOPIC "/update-settings"
@@ -44,10 +45,11 @@ float readings[5];
 int readingIndex;
 unsigned long fanOnTime;
 unsigned long lastMsg;
+float maxDuringInitial;
 
 struct Settings {
   int signature;
-  float onTemperature, onRate, offTemperature;
+  float onDiffFromAmbient, onRate, offDiffFromMax;
   int minimumMinutes;
 } settings;
 
@@ -89,10 +91,12 @@ void transition(int newState) {
     case STATE_INITIAL:
       fanOn();
       fanOnTime = millis();
+      maxDuringInitial = 0.0;
       state = STATE_INITIAL;
       break;
 
     case STATE_WAITING:
+      publish(MAX_DURING_INITIAL_TOPIC, maxDuringInitial);
       state = STATE_WAITING;
       break;
   }
@@ -153,14 +157,14 @@ void handleSubscribed(uint16_t packetId, const espMqttClientTypes::SubscribeRetu
 
 void dumpSettings() {
   Serial.println("SETTINGS");
-  Serial.printf(" On temperature: %0.1f\n", settings.onTemperature);
+  Serial.printf(" On diff from ambient: %0.1f\n", settings.onDiffFromAmbient);
   Serial.printf(" On rate: %0.1f\n", settings.onRate);
-  Serial.printf(" Off temperature: %0.1f\n", settings.offTemperature);
+  Serial.printf(" Off diff from max: %0.1f\n", settings.offDiffFromMax);
   Serial.printf(" Minimum minutes: %d\n", settings.minimumMinutes);
 
-  publish(SETTINGS_TOPIC "/on-temperature", settings.onTemperature);
+  publish(SETTINGS_TOPIC "/on-diff-from-ambient", settings.onDiffFromAmbient);
   publish(SETTINGS_TOPIC "/on-rate", settings.onRate);
-  publish(SETTINGS_TOPIC "/off-temperature", settings.offTemperature);
+  publish(SETTINGS_TOPIC "/off-diff-from-max", settings.offDiffFromMax);
   publish(SETTINGS_TOPIC "/minimum-minutes", settings.minimumMinutes);
 }
 
@@ -172,10 +176,10 @@ void loadSettings() {
     Serial.println("Saved settings not found, using defaults");
 
     settings.signature = 12345;
-    settings.onTemperature = 25;
-    settings.onRate = 10;
-    settings.offTemperature = 23;
-    settings.minimumMinutes = 5;
+    settings.onDiffFromAmbient = 7;
+    settings.onRate = 8;
+    settings.offDiffFromMax = 7;
+    settings.minimumMinutes = 8;
 
     EEPROM.put(0, settings);
     EEPROM.commit();
@@ -188,9 +192,9 @@ void procesSettings(const char* psettings) {
   JsonDocument doc;
   deserializeJson(doc, psettings);
 
-  settings.onTemperature = doc["on-temperature"];
+  settings.onDiffFromAmbient = doc["on-diff-from-ambient"];
   settings.onRate = doc["on-rate"];
-  settings.offTemperature = doc["off-temperature"];
+  settings.offDiffFromMax = doc["off-diff-from-max"];
   settings.minimumMinutes = doc["minimum-minutes"];
 
   EEPROM.put(0, settings);
@@ -300,8 +304,6 @@ void loop() {
     publish(CURRENT_TEMPERATURE_TOPIC, tempC);
     publish(AMBIENT_TEMPERATURE_TOPIC, ambient);
 
-    // Serial.printf("Temp: %0.1f, ambient: %0.1f\n", tempC, ambient);
-
     // Always watch for rapidly increasing temperature whatever the current state.
     if (roc > settings.onRate) {
       transition(STATE_INITIAL);
@@ -312,7 +314,7 @@ void loop() {
         publish(CURRENT_STATE_TOPIC, "idle");
 
         // Check for high temperature and start the cycle if found.
-        if (tempC > settings.onTemperature) {
+        if ((tempC - ambient) > settings.onDiffFromAmbient) {
           transition(STATE_INITIAL);
         }
 
@@ -324,6 +326,12 @@ void loop() {
         // We've just turned the fan on, keep it on for a period.
         if ((millis() - fanOnTime) > 1000UL * 60UL * settings.minimumMinutes) {
           transition(STATE_WAITING);
+          break;
+        }
+
+        // Record the highest temp we see during this state.
+        if (tempC > maxDuringInitial) {
+          maxDuringInitial = tempC;
         }
 
         break;
@@ -332,7 +340,7 @@ void loop() {
         publish(CURRENT_STATE_TOPIC, "waiting");
 
         // Initial delay is over, wait for the temperature to be low enough to switch the fan off.
-        if (tempC < settings.offTemperature) {
+        if (maxDuringInitial == 0.0 || ((maxDuringInitial - tempC) >= settings.offDiffFromMax)) {
           transition(STATE_IDLE);
         }
 
