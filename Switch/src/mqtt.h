@@ -7,15 +7,15 @@ class MQTT {
   WiFiClient wifiClient;
   uint16_t packetId;
   void dumpPacket(byte *ppacket, int length);
-  bool sendCONNECT(char *pclient, int keepAlive);
+  bool sendCONNECT(const char *pclient, int keepAlive);
   bool awaitCONNACK();
-  bool sendPUBLISH(char *ptopic, void *pdata, int length);
+  bool sendPUBLISH(const char *ptopic, const void *pdata, int length);
   bool awaitPUBACK();
   bool sendDISCONNECT();
 
  public:
   MQTT(WiFiClient &wifiClient);
-  bool connect(char *pserver, int port, char *pclient);
-  bool publish(char *ptopic, char *pmessage);
+  bool connect(const char *pserver, int port, const char *pclient);
+  bool publish(const char *ptopic, const char *pmessage);
   bool disconnect();
 };

@@ -16,7 +16,7 @@ void MQTT::dumpPacket(byte *ppacket, int length) {
   Serial.println();
 }
 
-bool MQTT::sendCONNECT(char *pclient, int keepAlive) {
+bool MQTT::sendCONNECT(const char *pclient, int keepAlive) {
   byte *ppacket;
   int index, n;
   bool result = false;
@@ -74,7 +74,7 @@ exit:
   return result;
 }
 
-bool MQTT::sendPUBLISH(char *ptopic, void *pdata, int length) {
+bool MQTT::sendPUBLISH(const char *ptopic, const void *pdata, int length) {
   byte *ppacket;
   int index, n;
   bool result = false;
@@ -151,7 +151,7 @@ exit:
   return result;
 }
 
-bool MQTT::connect(char *pserver, int port, char *pclient) {
+bool MQTT::connect(const char *pserver, int port, const char *pclient) {
   int tries;
   bool result = false;
 
@@ -180,7 +180,7 @@ exit:
   return result;
 }
 
-bool MQTT::publish(char *ptopic, char *pmessage) {
+bool MQTT::publish(const char *ptopic, const char *pmessage) {
   int tries;
   bool result = false;
 
