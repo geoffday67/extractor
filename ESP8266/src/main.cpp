@@ -21,6 +21,7 @@
 #define SETTINGS_TOPIC ROOT_TOPIC "/settings"
 #define UPDATE_SETTINGS_TOPIC ROOT_TOPIC "/update-settings"
 #define UPDATE_STATE_TOPIC ROOT_TOPIC "/update-state"
+#define EXTRACTOR_TOPIC ROOT_TOPIC "/extractor"
 
 #define FAN_PIN 4
 #define ONE_WIRE_BUS 13
@@ -28,6 +29,8 @@
 #define STATE_IDLE 1
 #define STATE_INITIAL 2
 #define STATE_WAITING 3
+#define STATE_FORCED_ON 4
+#define STATE_FORCED_OFF 5
 
 // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
 OneWire oneWire(ONE_WIRE_BUS);
@@ -43,7 +46,7 @@ char mqttMessage[256];
 int state;
 float readings[5];
 int readingIndex;
-unsigned long fanOnTime;
+unsigned long fanOnTime, forcedTime;
 unsigned long lastMsg;
 float maxDuringInitial;
 
@@ -98,6 +101,18 @@ void transition(int newState) {
     case STATE_WAITING:
       publish(MAX_DURING_INITIAL_TOPIC, maxDuringInitial);
       state = STATE_WAITING;
+      break;
+
+    case STATE_FORCED_ON:
+      fanOn();
+      forcedTime = millis();
+      state = STATE_FORCED_ON;
+      break;
+
+    case STATE_FORCED_OFF:
+      fanOff();
+      forcedTime = millis();
+      state = STATE_FORCED_OFF;
       break;
   }
 }
@@ -188,22 +203,7 @@ void loadSettings() {
   dumpSettings();
 }
 
-void procesSettings(const char* psettings) {
-  JsonDocument doc;
-  deserializeJson(doc, psettings);
-
-  settings.onDiffFromAmbient = doc["on-diff-from-ambient"];
-  settings.onRate = doc["on-rate"];
-  settings.offDiffFromMax = doc["off-diff-from-max"];
-  settings.minimumMinutes = doc["minimum-minutes"];
-
-  EEPROM.put(0, settings);
-  EEPROM.commit();
-
-  dumpSettings();
-}
-
-void processState(const char *pstate) {
+void processState(const char* pstate) {
   if (!strcmp(pstate, "idle")) {
     transition(STATE_IDLE);
     lastMsg = 0;
@@ -218,6 +218,31 @@ void processState(const char *pstate) {
   }
 }
 
+void processSettings(const char* psettings) {
+  JsonDocument doc;
+  deserializeJson(doc, psettings);
+
+  settings.onDiffFromAmbient = doc["on-diff-from-ambient"];
+  settings.onRate = doc["on-rate"];
+  settings.offDiffFromMax = doc["off-diff-from-max"];
+  settings.minimumMinutes = doc["minimum-minutes"];
+
+  EEPROM.put(0, settings);
+  EEPROM.commit();
+
+  dumpSettings();
+}
+
+void processExtractor(const char* pextractor) {
+  if (!strcmp(pextractor, "on")) {
+    transition(STATE_FORCED_ON);
+  } else if (!strcmp(pextractor, "off")) {
+    transition(STATE_FORCED_OFF);
+  } else {
+    Serial.printf("Unknown extractor: %s\n", pextractor);
+  }
+}
+
 void handleMessage(const espMqttClientTypes::MessageProperties& properties, const char* topic, const uint8_t* payload, size_t len, size_t index, size_t total) {
   Serial.printf("MQTT message received for topic: %s\n", topic);
 
@@ -228,7 +253,11 @@ void handleMessage(const espMqttClientTypes::MessageProperties& properties, cons
   } else if (!strcmp(topic, UPDATE_SETTINGS_TOPIC)) {
     memcpy(mqttMessage, payload, len);
     mqttMessage[len] = 0;
-    procesSettings(mqttMessage);
+    processSettings(mqttMessage);
+  } else if (!strcmp(topic, EXTRACTOR_TOPIC)) {
+    memcpy(mqttMessage, payload, len);
+    mqttMessage[len] = 0;
+    processExtractor(mqttMessage);
   } else {
     Serial.println("Unknown topic");
   }
@@ -251,6 +280,7 @@ void connectMqtt() {
 
   mqttClient.subscribe(UPDATE_STATE_TOPIC, 1);
   mqttClient.subscribe(UPDATE_SETTINGS_TOPIC, 1);
+  mqttClient.subscribe(EXTRACTOR_TOPIC, 1);
 }
 
 void setup() {
@@ -304,14 +334,14 @@ void loop() {
     publish(CURRENT_TEMPERATURE_TOPIC, tempC);
     publish(AMBIENT_TEMPERATURE_TOPIC, ambient);
 
-    // Always watch for rapidly increasing temperature whatever the current state.
-    if (roc > settings.onRate) {
-      transition(STATE_INITIAL);
-    }
-
     switch (state) {
       case STATE_IDLE:
         publish(CURRENT_STATE_TOPIC, "idle");
+
+        // Check for high increase rate and start the cycle if found.
+        if (roc > settings.onRate) {
+          transition(STATE_INITIAL);
+        }
 
         // Check for high temperature and start the cycle if found.
         if ((tempC - ambient) > settings.onDiffFromAmbient) {
@@ -322,6 +352,11 @@ void loop() {
 
       case STATE_INITIAL:
         publish(CURRENT_STATE_TOPIC, "initial");
+
+        // Check for high increase rate and start the cycle if found.
+        if (roc > settings.onRate) {
+          transition(STATE_INITIAL);
+        }
 
         // We've just turned the fan on, keep it on for a period.
         if ((millis() - fanOnTime) > 1000UL * 60UL * settings.minimumMinutes) {
@@ -339,11 +374,30 @@ void loop() {
       case STATE_WAITING:
         publish(CURRENT_STATE_TOPIC, "waiting");
 
+        // Check for high increase rate and start the cycle if found.
+        if (roc > settings.onRate) {
+          transition(STATE_INITIAL);
+        }
+
         // Initial delay is over, wait for the temperature to be low enough to switch the fan off.
         if (maxDuringInitial == 0.0 || ((maxDuringInitial - tempC) >= settings.offDiffFromMax)) {
           transition(STATE_IDLE);
         }
 
+        break;
+
+      case STATE_FORCED_ON:
+        publish(CURRENT_STATE_TOPIC, "forced on");
+        if ((millis() - forcedTime) > 1000UL * 600L) {
+          transition(STATE_IDLE);
+        }
+        break;
+
+      case STATE_FORCED_OFF:
+        publish(CURRENT_STATE_TOPIC, "forced off");
+        if ((millis() - forcedTime) > 1000UL * 600L) {
+          transition(STATE_IDLE);
+        }
         break;
     }
 
