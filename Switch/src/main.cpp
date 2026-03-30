@@ -49,7 +49,7 @@ bool connectWiFi() {
   }
   Serial.println("WiFi initialised");
 
-  network.connect(WIFI_CONNECTED, 4);
+  network.connect(WIFI_CONNECTED);
   if ((xEventGroupWaitBits(eventGroup, WIFI_CONNECTED, NO_CLEAR, WAIT_ALL, pdMS_TO_TICKS(10000)) && WIFI_CONNECTED) == 0) {
     goto exit;
   }

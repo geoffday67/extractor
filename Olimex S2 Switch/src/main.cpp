@@ -1,26 +1,16 @@
 #include <Arduino.h>
-#include <esp32_wifi/wifi.h>
-#include "soc/rtc.h"
-#include <driver/rtc_io.h>
-#include <driver/gpio.h>
+#include <MQTT.h>
+#include <WiFi.h>
 
-#include "mqtt.h"
+#define WIFI_SSID "Wario"
+#define WIFI_PASSWORD "mansion1"
 
-#define MQTT_SERVER "loft.local"
+#define MQTT_HOST "loft.local"
 #define MQTT_PORT 1883
 #define MQTT_CLIENT "extractor-switch"
 #define MQTT_STATE_TOPIC "shower/extractor"
 #define MQTT_ON_MESSAGE "on"
 #define MQTT_OFF_MESSAGE "off"
-
-#define WAIT_ALL pdTRUE
-#define WAIT_ONE pdFALSE
-#define CLEAR_ON_EXIT pdTRUE
-#define NO_CLEAR pdFALSE
-
-// Event flags
-#define WIFI_CONNECTED 0x01
-#define WIFI_STARTED 0x02
 
 #define ON_PIN 1
 #define OFF_PIN 6
@@ -28,122 +18,135 @@
 #define ON_LIGHT 2
 #define OFF_LIGHT 7
 
-#define BUTTON_PIN_BITMASK(GPIO) (1ULL << GPIO)
+#define STATUS_LED_PIN 18  // WS2812 data line — driven LOW during sleep
 
-EventGroupHandle_t eventGroup;
-ESP32Wifi network;
-WiFiClient wifi;
+WiFiClient wifiClient;
+MQTTClient mqttClient;
 
-bool connectWiFi() {
-  char ipAddress[ESP32Wifi::IpAddressLength];
-  uint8_t accessPointBSSSID[6];
-  uint8_t bssid[] = {0xC0, 0x06, 0xC3, 0xD5, 0x7B, 0x4E};
-  bool result = false;
+// Scans for all APs with matching SSID and connects to the one with the best RSSI.
+void connectWifi() {
+  Serial.println("Scanning for WiFi networks...");
 
-  eventGroup = xEventGroupCreate();
-  esp_event_loop_create_default();
-  Serial.println("Event groups created");
+  int found = WiFi.scanNetworks();
+  int bestIndex = -1;
+  int bestRSSI = -32768;
 
-  network.init(eventGroup, WIFI_STARTED);
-  if ((xEventGroupWaitBits(eventGroup, WIFI_STARTED, NO_CLEAR, WAIT_ALL, pdMS_TO_TICKS(10000)) && WIFI_STARTED) == 0) {
-    goto exit;
-  }
-  Serial.println("WiFi initialised");
-
-  network.connect(WIFI_CONNECTED, 4);
-  // network.connect(WIFI_CONNECTED, "Wario", "mansion1", bssid);
-  if ((xEventGroupWaitBits(eventGroup, WIFI_CONNECTED, NO_CLEAR, WAIT_ALL, pdMS_TO_TICKS(10000)) && WIFI_CONNECTED) == 0) {
-    goto exit;
+  for (int i = 0; i < found; i++) {
+    if (WiFi.SSID(i) == WIFI_SSID && WiFi.RSSI(i) > bestRSSI) {
+      bestRSSI = WiFi.RSSI(i);
+      bestIndex = i;
+    }
   }
 
-  network.getIpAddress(ipAddress);
-  network.getAccessPointBSSID(accessPointBSSSID);
-  Serial.printf("WiFi connected to %02X:%02X:%02X:%02X:%02X:%02X with address %s\n", accessPointBSSSID[0], accessPointBSSSID[1], accessPointBSSSID[2], accessPointBSSSID[3], accessPointBSSSID[4], accessPointBSSSID[5], ipAddress);
+  if (bestIndex < 0) {
+    Serial.println("SSID not found in scan, connecting anyway...");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  } else {
+    Serial.printf("Best AP: BSSID %s  channel %d  RSSI %d dBm\n",
+                  WiFi.BSSIDstr(bestIndex).c_str(),
+                  WiFi.channel(bestIndex),
+                  bestRSSI);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD,
+               WiFi.channel(bestIndex),
+               WiFi.BSSID(bestIndex));
+  }
 
-  result = true;
+  WiFi.scanDelete();
 
-exit:
-  return result;
+  Serial.print("Connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.printf("\nConnected — IP: %s\n", WiFi.localIP().toString().c_str());
 }
 
-void disconnectWiFi() {
-  // wifi.flush();
-  // WiFi.mode(WIFI_OFF);
-  network.stop();
-  Serial.println("WiFi disconnected");
+void connectMqtt() {
+  Serial.print("Connecting to MQTT broker");
+  while (!mqttClient.connect(MQTT_CLIENT)) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\nMQTT connected");
 }
 
-bool setState(char* pNewState) {
-  bool result = false;
-  MQTT mqtt(wifi);
+void goToSleep() {
+  // Shut down WiFi radio before sleeping
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
 
-  Serial.printf("Setting state to %s\n", pNewState);
+  // Drive WS2812 data line low — floating input causes the chip to draw current
+  pinMode(STATUS_LED_PIN, OUTPUT);
+  digitalWrite(STATUS_LED_PIN, LOW);
 
-  if (!connectWiFi()) {
-    Serial.println("Error connecting WiFi");
-    goto exit;
-  }
-
-  wifi.setTimeout(5000);
-
-  if (!mqtt.connect(MQTT_SERVER, MQTT_PORT, MQTT_CLIENT)) {
-    Serial.println("Error connecting MQTT");
-    goto exit;
-  }
-
-  if (!mqtt.publish(MQTT_STATE_TOPIC, pNewState)) {
-    Serial.println("Error publishing to MQTT");
-    goto exit;
-  }
-
-  result = true;
-
-exit:
-  mqtt.disconnect();
-  disconnectWiFi();
-  return result;
-}
-
-void handleButtonWakeup() {
-  pinMode(ON_LIGHT, OUTPUT);
-  pinMode(OFF_LIGHT, OUTPUT);
-
-  if (esp_sleep_get_ext1_wakeup_status() & BUTTON_PIN_BITMASK(ON_PIN)) {
-    digitalWrite(ON_LIGHT, HIGH);
-    setState(MQTT_ON_MESSAGE);
-  }
-
-  if (esp_sleep_get_ext1_wakeup_status() & BUTTON_PIN_BITMASK(OFF_PIN)) {
-    digitalWrite(OFF_LIGHT, HIGH);
-    setState(MQTT_OFF_MESSAGE);
-  }
-
-  pinMode(ON_LIGHT, INPUT);
+  // Return LED pins to INPUT so they don't source/sink current during sleep
+  pinMode(ON_LIGHT,  INPUT);
   pinMode(OFF_LIGHT, INPUT);
+
+  // Wakeup pins must be INPUT before isolation so HOLD latches them
+  // high-impedance — otherwise HOLD locks them in whatever driven state
+  // they were in and the EXT1 comparator can't see the button signal.
+  pinMode(ON_PIN,  INPUT);
+  pinMode(OFF_PIN, INPUT);
+
+  // Wake when either button pulls its pin high
+  esp_sleep_enable_ext1_wakeup_io(
+      (1ULL << ON_PIN) | (1ULL << OFF_PIN),
+      ESP_EXT1_WAKEUP_ANY_HIGH);
+
+  // Power down all RTC domains — external pull-downs hold the pins stable
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
+
+  Serial.println("Entering deep sleep...");
+  Serial.flush();
+  esp_deep_sleep_start();
 }
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Starting");
 
   if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1) {
-    Serial.println("Waking");
-    handleButtonWakeup();
+    uint64_t wakeStatus = esp_sleep_get_ext1_wakeup_status();
+    bool isOn  = wakeStatus & (1ULL << ON_PIN);
+    bool isOff = wakeStatus & (1ULL << OFF_PIN);
+
+    Serial.printf("Woke on EXT1 — status=0x%llx  isOn=%d  isOff=%d\n",
+                  wakeStatus, isOn, isOff);
+
+    if (isOn) {
+      pinMode(ON_LIGHT, OUTPUT);
+      digitalWrite(ON_LIGHT, HIGH);
+
+      connectWifi();
+      mqttClient.begin(MQTT_HOST, MQTT_PORT, wifiClient);
+      connectMqtt();
+      mqttClient.publish(MQTT_STATE_TOPIC, MQTT_ON_MESSAGE, false, 1);
+      mqttClient.disconnect();
+
+      digitalWrite(ON_LIGHT, LOW);
+    }
+
+    if (isOff) {
+      pinMode(OFF_LIGHT, OUTPUT);
+      digitalWrite(OFF_LIGHT, HIGH);
+
+      connectWifi();
+      mqttClient.begin(MQTT_HOST, MQTT_PORT, wifiClient);
+      connectMqtt();
+      mqttClient.publish(MQTT_STATE_TOPIC, MQTT_OFF_MESSAGE, false, 1);
+      mqttClient.disconnect();
+
+      digitalWrite(OFF_LIGHT, LOW);
+    }
+
+    delay(500);
   }
 
-  Serial.println("Sleeping");
-  Serial.flush();
-
-  //rtc_clk_8m_enable(true, true);
-  //rtc_clk_slow_freq_set(RTC_SLOW_FREQ_8MD256);
-
-  esp_sleep_enable_ext1_wakeup_io(BUTTON_PIN_BITMASK(ON_PIN) | BUTTON_PIN_BITMASK(OFF_PIN), ESP_EXT1_WAKEUP_ANY_HIGH);
-  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
-  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
-  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
-  gpio_set_direction((gpio_num_t)ON_PIN, GPIO_MODE_INPUT);
-  esp_deep_sleep_start();
+  goToSleep();
 }
 
 void loop() {
+  // Never reached — deep sleep wakes as a full reset, re-entering setup()
 }
