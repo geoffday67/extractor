@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <esp32_wifi/wifi.h>
+#include <WiFi.h>
 #include <mqtt.h>
 
 #define WAIT_ALL pdTRUE
@@ -14,35 +14,55 @@
 #define MQTT_ON_MESSAGE "initial"
 #define MQTT_OFF_MESSAGE "idle"
 
-// Event flags
-#define WIFI_CONNECTED 0x01
-#define WIFI_STARTED 0x02
-
-EventGroupHandle_t eventGroup;
-ESP32Wifi network;
-char ipAddress[ESP32Wifi::IpAddressLength];
-
 bool connectWiFi() {
+  unsigned long start;
+  int count, n, max_rssi, network;
   bool result = false;
 
-  eventGroup = xEventGroupCreate();
-  esp_event_loop_create_default();
-  Serial.println("Event groups created");
+  WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(false);
 
-  network.init(eventGroup, WIFI_STARTED);
-  if ((xEventGroupWaitBits(eventGroup, WIFI_STARTED, NO_CLEAR, WAIT_ALL, pdMS_TO_TICKS(10000)) && WIFI_STARTED) == 0) {
+  // Limiting the Tx power is necessary for a consistent connection on the Supermini to avoid brown-out during connection.
+  WiFi.setTxPower(WIFI_POWER_13dBm);
+
+  WiFi.disconnect(true, true);
+  delay(100);
+
+  Serial.print("Scanning ... ");
+  start = millis();
+  count = WiFi.scanNetworks(false, false, false, 100, 0, "Wario");
+  Serial.printf("%d networks found in %d ms\n", count, millis() - start);
+
+  max_rssi = -999;
+  network = -1;
+  for (n = 0; n < count; n++) {
+    if (WiFi.RSSI(n) > max_rssi) {
+      max_rssi = WiFi.RSSI(n);
+      network = n;
+    }
+  }
+  if (network == -1) {
+    Serial.println("No usable network found");
     goto exit;
   }
-  Serial.println("WiFi initialised");
 
-  network.connect(WIFI_CONNECTED);
-  if ((xEventGroupWaitBits(eventGroup, WIFI_CONNECTED, NO_CLEAR, WAIT_ALL, pdMS_TO_TICKS(10000)) && WIFI_CONNECTED) == 0) {
-    goto exit;
+  while (WiFi.status() != WL_CONNECTED) {
+    WiFi.begin("Wario", "mansion1", WiFi.channel(network), WiFi.BSSID(network));
+    Serial.print("Connecting WiFi ...");
+
+    start = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+      if (millis() - start > 5000) {
+        Serial.println(" timed out connecting to access point");
+        goto exit;
+      }
+      Serial.print(".");
+      delay(500);
+    }
   }
-
-  network.getIpAddress(ipAddress);
-  Serial.printf("WiFi connected at %s\n", ipAddress);
-
+  Serial.println();
+  Serial.printf("Connected as %s to access point %s\n", WiFi.localIP().toString().c_str(), WiFi.BSSIDstr().c_str());
   result = true;
 
 exit:
@@ -50,9 +70,7 @@ exit:
 }
 
 void disconnectWiFi() {
-  network.stop();
-  esp_wifi_stop();
-  Serial.println("WiFi disconnected");
+  WiFi.disconnect();
 }
 
 void setup() {
@@ -60,6 +78,11 @@ void setup() {
 
   Serial.begin(115200);
   Serial.println("Starting");
+
+  connectWiFi();
+  delay(1000);
+  //disconnectWiFi();
+  return;
 
   pinMode(8, OUTPUT);
   digitalWrite(8, LOW);
@@ -71,7 +94,7 @@ void setup() {
   if (!mqtt.connect(MQTT_SERVER, MQTT_PORT, MQTT_CLIENT)) {
     Serial.println("Error connecting MQTT");
   }
-  sprintf (s, "0x%02X", esp_sleep_get_gpio_wakeup_status());
+  sprintf(s, "0x%02X", esp_sleep_get_gpio_wakeup_status());
   if (!mqtt.publish(MQTT_STATE_TOPIC, s)) {
     Serial.println("Error publishing to MQTT");
   }
