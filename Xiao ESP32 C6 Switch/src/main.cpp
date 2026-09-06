@@ -8,11 +8,11 @@
 #define CLEAR_ON_EXIT pdTRUE
 #define NO_CLEAR pdFALSE
 
-#define SWITCH_ON_PIN 0
-#define SWITCH_OFF_PIN 1
+#define SWITCH_ON_PIN 1
+#define SWITCH_OFF_PIN 2
 
-#define SWITCH_ON_LED 22
-#define SWITCH_OFF_LED 21
+#define SWITCH_ON_LED 21
+#define SWITCH_OFF_LED 22
 
 // PWM levels (8-bit). Dim = "press registered, working"; kept low to minimise
 // current draw during the radio's peak load. Bright = confirmed.
@@ -22,7 +22,7 @@
 #define MQTT_HOST "192.168.68.106"
 #define MQTT_PORT 1883
 #define MQTT_CLIENT "extractor-switch"
-#define MQTT_STATE_TOPIC "shower/extractor/test"
+#define MQTT_STATE_TOPIC "shower/extractor"
 #define MQTT_ON_MESSAGE "on"
 #define MQTT_OFF_MESSAGE "off"
 
